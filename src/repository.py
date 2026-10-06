@@ -5,16 +5,20 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .domain import Conflict, NotFound
+from .ledger_repository import LEDGER_SCHEMA, LedgerRepositoryMixin
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class Repository:
+class Repository(LedgerRepositoryMixin):
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
+        self.crash_in_next_apply = False
         self._init_schema()
+        # 进程重开后重放未完成的事故合并任务，恢复一致台账
+        self.recover_pending_jobs()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path, timeout=15)
@@ -50,6 +54,7 @@ class Repository:
                 CREATE INDEX IF NOT EXISTS idx_records_state ON records(state);
                 CREATE INDEX IF NOT EXISTS idx_audit_record ON audit_events(record_id, id);
                 """
+                + LEDGER_SCHEMA
             )
 
     @staticmethod

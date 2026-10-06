@@ -12,6 +12,12 @@ from .domain import Actor, DomainError, PermissionDenied, ValidationError
 RECORD_RE = re.compile(r"^/api/records/(\d+)$")
 ACTION_RE = re.compile(r"^/api/records/(\d+)/actions/([a-z_]+)$")
 AUDIT_RE = re.compile(r"^/api/records/(\d+)/audit$")
+CONTRACT_RE = re.compile(r"^/api/contracts/(\d+)$")
+CONTRACT_CLAIMS_RE = re.compile(r"^/api/contracts/(\d+)/claims$")
+CONTRACT_OCC_RE = re.compile(r"^/api/contracts/(\d+)/occurrences$")
+CONTRACT_TIMELINE_RE = re.compile(r"^/api/contracts/(\d+)/timeline$")
+CLAIM_RE = re.compile(r"^/api/claims/(\d+)$")
+CLAIM_ACTION_RE = re.compile(r"^/api/claims/(\d+)/actions/([a-z_]+)$")
 
 
 def make_handler(service: Any, static_dir: Path):
@@ -64,6 +70,7 @@ def make_handler(service: Any, static_dir: Path):
         def do_GET(self) -> None:
             try:
                 parsed = urlparse(self.path)
+                query = parse_qs(parsed.query)
                 if parsed.path == "/health":
                     self._send(200, {"status": "ok", "service": "reinsurance-exposure", "database": service.repository.health()})
                     return
@@ -72,7 +79,6 @@ def make_handler(service: Any, static_dir: Path):
                     self._send(200, page, "text/html; charset=utf-8")
                     return
                 if parsed.path == "/api/records":
-                    query = parse_qs(parsed.query)
                     records = service.list_records(self._actor(), state=query.get("state", [None])[0], limit=int(query.get("limit", ["100"])[0]))
                     self._send(200, {"items": records})
                     return
@@ -87,6 +93,38 @@ def make_handler(service: Any, static_dir: Path):
                 if parsed.path == "/api/stats":
                     self._send(200, service.stats(self._actor()))
                     return
+                if parsed.path == "/api/contracts":
+                    self._send(200, {"items": service.list_contracts(self._actor(), limit=int(query.get("limit", ["100"])[0]))})
+                    return
+                match = CONTRACT_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.get_contract(self._actor(), int(match.group(1))))
+                    return
+                match = CONTRACT_CLAIMS_RE.match(parsed.path)
+                if match:
+                    self._send(200, {"items": service.list_claims(self._actor(), int(match.group(1)))})
+                    return
+                match = CONTRACT_OCC_RE.match(parsed.path)
+                if match:
+                    self._send(200, {"items": service.list_occurrences(self._actor(), int(match.group(1)))})
+                    return
+                match = CONTRACT_TIMELINE_RE.match(parsed.path)
+                if match:
+                    self._send(200, {"items": service.ledger_timeline(self._actor(), int(match.group(1)))})
+                    return
+                match = CLAIM_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.get_claim(self._actor(), int(match.group(1))))
+                    return
+                if parsed.path == "/api/adjustments":
+                    contract_id = query.get("contract_id", [None])[0]
+                    if contract_id is not None:
+                        try:
+                            contract_id = int(contract_id)
+                        except ValueError as exc:
+                            raise ValidationError("contract_id必须是整数") from exc
+                    self._send(200, {"items": service.list_adjustments(self._actor(), contract_id)})
+                    return
                 self._send(404, {"error": "not_found", "message": "路径不存在"})
             except Exception as exc:
                 self._handle_error(exc)
@@ -98,6 +136,28 @@ def make_handler(service: Any, static_dir: Path):
                 if parsed.path == "/api/records":
                     record = service.create(self._actor(), body.get("reference", ""), body.get("data", {}))
                     self._send(201, record)
+                    return
+                if parsed.path == "/api/contracts":
+                    contract = service.create_contract(self._actor(), body.get("reference", ""), body.get("data", {}))
+                    self._send(201, contract)
+                    return
+                match = CONTRACT_CLAIMS_RE.match(parsed.path)
+                if match:
+                    claim = service.register_claim(self._actor(), int(match.group(1)), body.get("data", {}))
+                    self._send(201, claim)
+                    return
+                match = CLAIM_ACTION_RE.match(parsed.path)
+                if match:
+                    version = body.get("expected_version")
+                    if not isinstance(version, int):
+                        raise ValidationError("expected_version必须是整数")
+                    claim = service.ledger_action(
+                        self._actor(), int(match.group(1)), version, match.group(2), body.get("data", {})
+                    )
+                    self._send(200, claim)
+                    return
+                if parsed.path == "/api/ledger/reconcile":
+                    self._send(200, service.reconcile(self._actor()))
                     return
                 match = ACTION_RE.match(parsed.path)
                 if match:

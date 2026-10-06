@@ -5,6 +5,7 @@ from .domain import Actor, Conflict, ValidationError, boolean, choice, integer, 
 
 
 INITIAL_STATE = "quoted"
+DEFAULT_EVENT_HOURS = 72.0
 CREATE_ROLES = {'underwriter'}
 ACTION_ROLES = {'bind': {'underwriter'}, 'submit_claim': {'claims_officer'}, 'calculate': {'claims_officer'}, 'settle': {'finance'}, 'reject': {'finance', 'claims_officer'}}
 TRANSITIONS = {'bind': {'quoted': 'bound'}, 'submit_claim': {'bound': 'claim_submitted'}, 'calculate': {'claim_submitted': 'calculated'}, 'settle': {'calculated': 'settled'}, 'reject': {'claim_submitted': 'rejected', 'calculated': 'rejected'}}
@@ -34,6 +35,10 @@ class DomainRules:
         number(p, "loss_amount", 0)
         number(p, "reinstatement_pct", 0, 1)
         number(p, "aggregate_prior", 0)
+        if "event_hours" in p and p["event_hours"] is not None:
+            number(p, "event_hours", 0)
+        else:
+            p["event_hours"] = DEFAULT_EVENT_HOURS
         if limit <= attachment:
             raise ValidationError("赔款限额必须高于起赔点")
         return p
@@ -55,8 +60,12 @@ class DomainRules:
         for item in existing:
             if item["state"] in {"rejected"} or item["payload"].get("event_id") != event_id:
                 continue
+            # 已进入理赔流程的合约按其原始预估不再重复占用创建容量；
+            # 事故内实际占用由事故台账按核定摊回统计
+            if item["state"] != INITIAL_STATE:
+                continue
             used += float(item["payload"].get("recoverable_amount", 0))
-        capacity = float(payload["layer_width"]) * float(payload["cession_pct"])
+        capacity = float(payload["layer_width"])
         projected = min(max(0.0, float(payload["loss_amount"]) - float(payload["attachment"])), float(payload["layer_width"])) * float(payload["cession_pct"])
         if used + projected > capacity + 0.01:
             raise Conflict("同一事件累计摊回超过再保容量")
@@ -79,6 +88,7 @@ class DomainRules:
         elif action == "submit_claim":
             changes["claim_number"] = text(data, "claim_number")
             changes["claim_event_id"] = text(data, "event_id")
+            changes["occurred_at"] = text(data, "occurred_at")
             summary = "赔案已提交"
         elif action == "calculate":
             loss = number(data, "approved_loss", 0)

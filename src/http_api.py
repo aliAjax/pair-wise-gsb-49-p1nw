@@ -87,6 +87,10 @@ def make_handler(service: Any, static_dir: Path):
                 if parsed.path == "/api/stats":
                     self._send(200, service.stats(self._actor()))
                     return
+                if parsed.path == "/api/occurrences":
+                    query = parse_qs(parsed.query)
+                    self._send(200, {"items": service.occurrences(self._actor(), event_id=query.get("event_id", [None])[0])})
+                    return
                 self._send(404, {"error": "not_found", "message": "路径不存在"})
             except Exception as exc:
                 self._handle_error(exc)

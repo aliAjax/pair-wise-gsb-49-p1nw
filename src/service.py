@@ -2,9 +2,12 @@
 from typing import Any, Dict, List, Optional
 
 from .audit import AuditRecorder
-from .domain import Actor, PermissionDenied, text
+from .domain import Actor, PermissionDenied, ValidationError, text
+from .occurrences import normalize_time, parse_time
 from .repository import Repository
 from .rules import DomainRules
+
+CLAIM_ACTIONS = {"submit_claim", "calculate", "settle", "reject"}
 
 
 class Service:
@@ -51,8 +54,19 @@ class Service:
             raise PermissionDenied("角色无权执行该操作")
         record = self.repository.get(record_id)
         self.rules.require_transition(record, action)
-        new_state, new_payload, summary = self.rules.apply_action(record, action, data or {})
-        return self.repository.mutate(
+        data = dict(data or {})
+        if action == "submit_claim":
+            # 以发生时刻并入事故台账，统一存为UTC的ISO8601文本
+            if text(data, "event_id") != str(record["payload"].get("event_id", "")):
+                raise ValidationError("报案灾害编号必须与合约一致")
+            data["occurred_at"] = normalize_time(parse_time(text(data, "occurred_at")))
+        new_state, new_payload, summary = self.rules.apply_action(record, action, data)
+        if action == "reject":
+            # 拒赔后不再计入事故占用；归属痕迹保留在台账（inactive）
+            for key in ("occurrence_id", "occurrence_recovery", "reinstatements_used"):
+                new_payload.pop(key, None)
+        mutate = self.repository.apply_claim_action if action in CLAIM_ACTIONS else self.repository.mutate
+        return mutate(
             record_id=record_id,
             expected_version=int(expected_version),
             state=new_state,
@@ -61,6 +75,11 @@ class Service:
             action=action,
             details={"summary": summary, "input": data or {}, "from": record["state"], "to": new_state},
         )
+
+    def occurrences(self, actor: Actor, event_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        return self.repository.list_occurrences(event_id=event_id)
 
     def timeline(self, actor: Actor, record_id: int) -> List[Dict[str, Any]]:
         actor = self._actor(actor)
